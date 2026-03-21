@@ -25,6 +25,9 @@ class EMRState(TypedDict):
     is_valid: bool  # 病历逻辑是否通过质控
     feedback: str  # 质控主任给出的内部修改意见（用于注入 Agent1 记忆进行回滚修正）
     rollback_question: str  # 质控主任建议向患者追问的话术（比如确认腹泻和便秘的时间先后）
+    error_report: Dict[str, Any]  # 结构化质控错误（冲突类型、冲突字段、建议追问槽位）
+    revision_round: int  # 质控回滚轮次计数
+    last_valid_snapshot_id: str  # 最近一次通过质控的快照标识
 
 
     long_term_memory: str     # 存放从向量库中检索出的、与当前对话相关的长期记忆
