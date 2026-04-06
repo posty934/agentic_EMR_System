@@ -1,0 +1,125 @@
+import os
+import json
+import faiss
+import numpy as np
+from datetime import datetime
+from sentence_transformers import SentenceTransformer
+
+
+class PatientLongTermMemory:
+    def __init__(self, patient_id: str):
+        self.patient_id = patient_id
+        self.memory_dir = "data/patient_memories"
+        os.makedirs(self.memory_dir, exist_ok=True)
+
+        self.index_path = f"{self.memory_dir}/{patient_id}.index"
+        self.text_path = f"{self.memory_dir}/{patient_id}_texts.json"
+
+        self.encoder = SentenceTransformer("shibing624/text2vec-base-chinese")
+        self.dimension = self.encoder.get_sentence_embedding_dimension()
+
+        if os.path.exists(self.index_path) and os.path.exists(self.text_path):
+            self.index = faiss.read_index(self.index_path)
+            with open(self.text_path, "r", encoding="utf-8") as f:
+                self.memory_texts = json.load(f)
+        else:
+            self.index = faiss.IndexFlatL2(self.dimension)
+            self.memory_texts = []
+
+    def get_all_memories(self) -> list:
+        return self.memory_texts
+
+    def save_memory(self, record_summary: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d")
+        memory_entry = f"[{timestamp} 就诊记录] {record_summary}"
+
+        vector = self.encoder.encode([memory_entry]).astype("float32")
+        self.index.add(vector)
+        self.memory_texts.append(memory_entry)
+
+        faiss.write_index(self.index, self.index_path)
+        with open(self.text_path, "w", encoding="utf-8") as f:
+            json.dump(self.memory_texts, f, ensure_ascii=False)
+
+    def _build_symptom_candidates(self, current_entities: list) -> list:
+        candidates = []
+        if not current_entities:
+            return candidates
+
+        for ent in current_entities:
+            if ent.get("status", "active") == "revoked":
+                continue
+
+            standard_term = (ent.get("standard_term") or "").strip()
+            symptom_name = (ent.get("symptom_name") or "").strip()
+
+            if standard_term and standard_term != "未知术语":
+                candidates.append(standard_term)
+            if symptom_name:
+                candidates.append(symptom_name)
+
+        # 去重但保序
+        deduped = []
+        seen = set()
+        for item in candidates:
+            if item not in seen:
+                deduped.append(item)
+                seen.add(item)
+        return deduped
+
+    def _filter_memories_by_symptoms(self, current_entities: list) -> list:
+        """
+        只保留“文本中明确出现当前症状词”的既往病史。
+        这是修复“腹泻/便秘误召回腹痛既往史”的关键。
+        """
+        symptom_candidates = self._build_symptom_candidates(current_entities)
+        if not symptom_candidates:
+            return []
+
+        matched = []
+        for idx, text in enumerate(self.memory_texts):
+            if any(symptom in text for symptom in symptom_candidates):
+                matched.append((idx, text))
+        return matched
+
+    def retrieve_memory(self, current_query: str, current_entities: list = None, top_k: int = 2) -> str:
+        """
+        根据当前症状检索真正相关的历史病历：
+        1. 先按当前 active 症状做字面过滤
+        2. 再在过滤后的结果里做向量排序
+        """
+        if not self.memory_texts:
+            return "该患者为首次就诊，无既往病史记录。"
+
+        current_entities = current_entities or []
+        matched_memories = self._filter_memories_by_symptoms(current_entities)
+
+        # 没有字面相关的既往史，就直接视为“无相关既往史”
+        if not matched_memories:
+            return "该患者暂无与当前症状直接相关的既往史。"
+
+        candidate_indices = [idx for idx, _ in matched_memories]
+        candidate_texts = [text for _, text in matched_memories]
+
+        query_vector = self.encoder.encode([current_query]).astype("float32")
+        candidate_vectors = self.encoder.encode(candidate_texts).astype("float32")
+
+        sub_index = faiss.IndexFlatL2(self.dimension)
+        sub_index.add(candidate_vectors)
+
+        k = min(top_k, len(candidate_texts))
+        D, I = sub_index.search(query_vector, k)
+
+        retrieved_memories = [candidate_texts[i] for i in I[0] if i != -1]
+
+        if retrieved_memories:
+            return "\n".join(retrieved_memories)
+
+        return "该患者暂无与当前症状直接相关的既往史。"
+
+
+if __name__ == "__main__":
+    ok = PatientLongTermMemory("10001")
+    print(ok.retrieve_memory("腹泻", current_entities=[
+        {"symptom_name": "拉肚子", "standard_term": "腹泻", "status": "active"}
+    ]))
