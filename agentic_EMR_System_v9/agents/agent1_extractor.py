@@ -13,32 +13,17 @@ from knowledge.retriever import MedicalRetriever
 load_dotenv()
 
 
-# class SymptomDetail(BaseModel):
-#     symptom_name: str = Field(description="核心症状名称，保留患者原话")
-#     standard_term: Optional[str] = Field(default=None, description="标准医学术语映射结果")
-#     status: str = Field(default="active", description="状态：'active'为确认存在的症状，'revoked'为排除")
-#     onset_time: Optional[str] = Field(default=None)
-#     characteristics: Optional[str] = Field(default=None)
-#     inducement: Optional[str] = Field(default=None)
-#     frequency: Optional[str] = Field(default=None)
-#     alleviating_factors: Optional[str] = Field(default=None)
-#     dynamic_details: Optional[Dict[str, str]] = Field(
-#         default_factory=dict,
-#         description="Planner动态追问收集到的其他细节"
-#     )
 class SymptomDetail(BaseModel):
     symptom_name: str = Field(description="核心症状名称，保留患者原话")
     standard_term: Optional[str] = Field(default=None, description="标准医学术语映射结果")
     status: str = Field(default="active", description="状态：active 为确认存在的症状，revoked 为患者否认或撤销")
 
-    # 既有通用字段
     onset_time: Optional[str] = Field(default=None, description="起病或发现时间")
     characteristics: Optional[str] = Field(default=None, description="症状性质、性状、颜色、程度等核心特征")
     inducement: Optional[str] = Field(default=None, description="诱因、触发因素、相关背景")
     frequency: Optional[str] = Field(default=None, description="频率、次数、病程规律、持续情况")
     alleviating_factors: Optional[str] = Field(default=None, description="加重或缓解因素、与进食/体位/排便等关系")
 
-    # 新增高频结构字段
     location: Optional[str] = Field(default=None, description="部位、分布范围、侧别")
     duration_pattern: Optional[str] = Field(default=None, description="持续时间、阵发/持续、昼夜规律、进展快慢")
     severity: Optional[str] = Field(default=None, description="严重程度、量、范围、影响程度")
@@ -55,7 +40,6 @@ class SymptomDetail(BaseModel):
     )
 
 
-
 class CoarseExtractionResult(BaseModel):
     symptoms: List[SymptomDetail] = Field(description="提取出的症状及其关联属性")
 
@@ -68,6 +52,8 @@ class Agent1Extractor:
             model=os.getenv("LLM_MODEL_NAME"),
             temperature=0.0,
         )
+
+        self.debug = os.getenv("AGENT_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
 
         self.retriever = MedicalRetriever()
 
@@ -129,20 +115,24 @@ class Agent1Extractor:
 【患者既往病史档案 (Long-term Memory)】
 {long_term_memory_str}
 
-{format_instructions}""")
-),
+{format_instructions}""")),
             ("human", "患者最新回复：{patient_input}")
         ]).partial(format_instructions=self.extract_parser.get_format_instructions())
         self.extract_chain = self.extract_prompt | self.llm | self.extract_parser
 
         # ==========================================
-        # 模块 B: Planner (动态医疗规划者)
+        # 模块 B + C 合并：Dialogue Planner-Speaker
         # ==========================================
         with open("knowledge/clinical_guidelines.json", "r", encoding="utf-8") as f:
             self.clinical_guidelines = json.load(f)
 
-        self.planner_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一名极其严谨且具备临床诊断思维的消化内科主治医师（Planner Agent）。
+        self.dialogue_prompt = ChatPromptTemplate.from_messages([
+            ("system", """你是一名极其严谨且具备临床诊断思维的消化内科主治医师，同时也是一名温和、专业的医院预问诊AI助手。
+
+你的任务不是输出后台指令，而是：
+- 先在内部严格完成临床规划；
+- 再直接输出一句能够对患者说的话。
+如果满足结束条件，则只输出：COMPLETED
 
 【当前患者的症状与已收集信息】:
 {active_entities}
@@ -164,7 +154,7 @@ class Agent1Extractor:
    当且仅当《指南》要求的所有要素都已经排查完毕后，你才可以考虑既往史；
    并且，只有“与当前症状直接相关”的既往史，才允许触发对比追问。
    如果该相关症状的 dynamic_details 中还未包含 "与过往病史关联" 字段，
-   你只能输出一条【宽泛的追问指令】：“向患者说明他之前也有过类似记录，粗略询问这次和上次比是否加重？有无新发伴随症状？”。
+   你只能向患者做一次宽泛追问：说明之前也有过类似记录，粗略询问这次和上次比是否加重？有无新发伴随症状？
 5. 🚨【新增症状确认机制（核心）】：
    当《指南》要求的所有要素都已经排查完毕，且相关既往史比较也已完成时，
    这只代表“当前已知症状的信息完整”，不代表整个问诊结束。
@@ -172,45 +162,27 @@ class Agent1Extractor:
    “除了这些，您还有其他不舒服的地方吗？”、“还有没有其他症状？” 这类“新增症状确认问题”。
 
    - 如果还没有问过，你不能输出 COMPLETED。
-     你只能输出一条指令：追问患者是否还有新增症状或其他不适。
+     你只能输出一句对患者的自然追问：询问是否还有新增症状或其他不适。
    - 只有当上一轮 AI 已经明确询问过“还有没有其他不舒服”，
      且患者这一次明确回答“没有了 / 就这些 / 没别的 / 暂时没有”等结束语时，
      你才可以输出 COMPLETED。
-
 6. 🚨【绝对结束红线】：
    只有同时满足以下条件时，才允许输出 COMPLETED：
    - 当前所有已知症状的指南要素已排查完毕；
    - 无相关既往史，或相关既往史比较已完成；
    - 已经完成“是否还有新增症状”的显式确认，且患者明确否认还有新症状。
 
-【执行步骤】：
-第一步：严格按上述规则评估。
-第二步：
-- 若满足【绝对结束红线】，只输出：COMPLETED。
-- 若当前症状问完了，但还没完成“新增症状确认”，只输出一条指令：询问是否还有其他不舒服。
-- 否则，只输出【一个】最紧急的追问指令。
-"""),
-            ("human", "请进行思考并给出下一步指令：")
+【输出规则】：
+1. 若满足【绝对结束红线】，只输出：COMPLETED
+2. 否则，只输出一句可以直接对患者说的话；必须短、自然、温和、专业。
+3. 一次只问一个最紧急的问题。
+4. 不要输出你的思考过程，不要输出“指令：”“分析：”“下一步：”之类前缀。
+5. 不要使用项目符号，不要解释你的规划依据。
+6. 不要向患者暴露“后台医师”“指南”“指令”“规划”“结构化信息”“既往史检索”等字眼。
+7. 除了 COMPLETED 之外，输出内容必须是患者可见话术，而不是后台任务描述。"""),
+            ("human", "患者刚刚说：{patient_input}\n请直接给出下一句对患者说的话；如果已经满足结束条件，只输出 COMPLETED。")
         ])
-        self.planner_chain = self.planner_prompt | self.llm | StrOutputParser()
-
-        # ==========================================
-        # 模块 C: Speaker (前台问诊员)
-        # ==========================================
-        self.reply_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一名温和、专业的医院预问诊AI助手。
-你的任务是将后台主治医师下达的【追问指令】，转化为对患者的自然语言提问。
-
-【主治医师下达的追问指令】:
-{planner_task}
-
-【规则】：
-1. 使用关切的口吻，话术要简短。
-2. 不要向患者暴露“后台医师”、“指南”、“指令”等字眼。
-"""),
-            ("human", "患者刚刚说：{patient_input}\n请开始提问：")
-        ])
-        self.reply_chain = self.reply_prompt | self.llm | StrOutputParser()
+        self.dialogue_chain = self.dialogue_prompt | self.llm | StrOutputParser()
 
     # =========================================================
     # 工具函数
@@ -317,10 +289,6 @@ class Agent1Extractor:
         return normalized in exact_finish_words
 
     def _get_history_related_targets(self, current_entities: List[dict], long_term_memory_str: str) -> List[dict]:
-        """
-        只找“当前 active 症状”里，真正出现在既往病史文本中的症状。
-        没出现，就视为“无相关既往史”。
-        """
         if not current_entities or not long_term_memory_str:
             return []
 
@@ -371,10 +339,6 @@ class Agent1Extractor:
         long_term_memory_str: str,
         patient_input: str
     ) -> List[dict]:
-        """
-        对“既往史对比回答”做定向写入：
-        只更新真正与既往史相关的那个/那些症状。
-        """
         targets = self._get_history_related_targets(current_entities, long_term_memory_str)
         if not targets:
             return []
@@ -408,8 +372,6 @@ class Agent1Extractor:
         try:
             current_entities = current_entities or []
 
-            # 如果上一轮是“既往史对比追问”，则不再让 LLM 自由写入
-            # 直接做代码级定向更新
             if self._is_history_comparison_question(last_ai_message):
                 targeted_updates = self._build_history_relation_updates(
                     current_entities=current_entities,
@@ -429,10 +391,6 @@ class Agent1Extractor:
             })
             extracted_symptoms = result_dict.get("symptoms", [])
 
-            # 给缺失字段补默认值，但不覆盖 LLM 已明确给出的 revoked
-            # for ent in extracted_symptoms:
-            #     ent.setdefault("status", "active")
-            #     ent.setdefault("dynamic_details", {})
             for ent in extracted_symptoms:
                 ent.setdefault("status", "active")
                 ent.setdefault("dynamic_details", {})
@@ -446,25 +404,23 @@ class Agent1Extractor:
                 ent.setdefault("relation_to_position", None)
                 ent.setdefault("progression", None)
 
-            print("\n" + "#" * 80)
-            print(f"[Extractor] 患者输入: {patient_input}")
-            print(f"[Extractor] LLM抽取结果(映射前): {json.dumps(extracted_symptoms, ensure_ascii=False)}")
+            if self.debug:
+                print("\n" + "#" * 80)
+                print(f"[Extractor] 患者输入: {patient_input}")
+                print(f"[Extractor] LLM抽取结果(映射前): {json.dumps(extracted_symptoms, ensure_ascii=False)}")
 
             for idx, ent in enumerate(extracted_symptoms, start=1):
                 status = ent.get("status", "active")
                 symptom_name = (ent.get("symptom_name") or "").strip()
 
                 if status != "active" or not symptom_name:
-                    print(
-                        f"[Extractor] 症状{idx} 跳过映射 | "
-                        f"symptom_name={symptom_name} | status={status}"
-                    )
+                    if self.debug:
+                        print(
+                            f"[Extractor] 症状{idx} 跳过映射 | "
+                            f"symptom_name={symptom_name} | status={status}"
+                        )
                     continue
 
-                # ===== 核心修复 =====
-                # 如果这个 symptom_name 在当前实体库里已经存在，
-                # 说明是“同一个症状的后续补充”，不再重新调用术语映射；
-                # 直接复用第一次建立该实体时的 standard_term。
                 existing_ent = self._find_existing_entity_by_symptom_name(
                     symptom_name=symptom_name,
                     current_entities=current_entities
@@ -472,54 +428,56 @@ class Agent1Extractor:
 
                 if existing_ent and str(existing_ent.get("standard_term", "")).strip():
                     ent["standard_term"] = existing_ent.get("standard_term")
-                    print(
-                        f"[Extractor] 症状{idx} 复用既有术语，不重新映射 | "
-                        f"symptom_name={symptom_name} | "
-                        f"standard_term={ent['standard_term']}"
-                    )
+                    if self.debug:
+                        print(
+                            f"[Extractor] 症状{idx} 复用既有术语，不重新映射 | "
+                            f"symptom_name={symptom_name} | "
+                            f"standard_term={ent['standard_term']}"
+                        )
                     continue
 
-                # 只有“首次出现的新症状”才做一次术语映射
                 query = self._build_mapping_query(ent)
 
-                print(
-                    f"[Extractor] 症状{idx} 首次出现，开始映射 | "
-                    f"symptom_name={symptom_name} | status={status} | query={query}"
-                )
+                if self.debug:
+                    print(
+                        f"[Extractor] 症状{idx} 首次出现，开始映射 | "
+                        f"symptom_name={symptom_name} | status={status} | query={query}"
+                    )
 
                 standard_term = self.retriever.get_standard_term(
                     query=query,
                     top_k=5,
                     raw_top_k=30,
-                    use_rerank=False
+                    use_rerank=True
                 )
                 ent["standard_term"] = standard_term
 
-                print(
-                    f"[Extractor] 症状{idx} 映射完成 | "
-                    f"symptom_name={symptom_name} | standard_term={standard_term}"
-                )
+                if self.debug:
+                    print(
+                        f"[Extractor] 症状{idx} 映射完成 | "
+                        f"symptom_name={symptom_name} | standard_term={standard_term}"
+                    )
 
-            print(f"[Extractor] 最终结果(映射后): {json.dumps(extracted_symptoms, ensure_ascii=False)}")
-            print("#" * 80 + "\n")
+            if self.debug:
+                print(f"[Extractor] 最终结果(映射后): {json.dumps(extracted_symptoms, ensure_ascii=False)}")
+                print("#" * 80 + "\n")
 
             return extracted_symptoms
-
 
         except Exception as e:
             print(f"提取出错: {e}")
             return []
 
     # =========================================================
-    # 模块 B + C：规划与生成回复
+    # 模块 B + C：规划与生成回复（合并版）
     # =========================================================
     def generate_reply(
-            self,
-            patient_input: str,
-            current_entities: List[dict],
-            last_ai_message: str = "",
-            chat_history_str: str = "",
-            long_term_memory_str: str = ""
+        self,
+        patient_input: str,
+        current_entities: List[dict],
+        last_ai_message: str = "",
+        chat_history_str: str = "",
+        long_term_memory_str: str = ""
     ) -> str:
         try:
             active_entities = self._get_active_entities(current_entities)
@@ -527,9 +485,6 @@ class Agent1Extractor:
             if not active_entities:
                 return "您好，系统似乎没有捕捉到您的不适症状，能请您再具体描述一下哪里不舒服吗？"
 
-            # 如果上一轮问的是既往史对比问题：
-            # 既往史相关内容补完后，不要直接结束，
-            # 而是先进入“是否还有新增症状”的确认阶段
             if self._is_history_comparison_question(last_ai_message):
                 history_targets = self._get_history_related_targets(active_entities, long_term_memory_str)
                 if not history_targets:
@@ -551,48 +506,40 @@ class Agent1Extractor:
             entities_str = json.dumps(active_entities, ensure_ascii=False, indent=2)
             guidelines_str = json.dumps(guidelines_for_current_symptoms, ensure_ascii=False, indent=2)
 
-            planner_task_raw = self.planner_chain.invoke({
+            dialogue_raw = self.dialogue_chain.invoke({
+                "patient_input": patient_input,
                 "active_entities": entities_str,
                 "retrieved_guidelines": guidelines_str,
                 "chat_history_str": chat_history_str,
                 "long_term_memory_str": long_term_memory_str
             })
 
-            print(f"\n[Planner 思考与决策过程] ->\n{planner_task_raw}\n")
+            if self.debug:
+                print(f"\n[Dialogue Planner-Speaker 原始输出] ->\n{dialogue_raw}\n")
 
-            planner_task_clean = re.sub(r"<thinking>.*?</thinking>", "", planner_task_raw, flags=re.DOTALL).strip()
+            dialogue_clean = re.sub(r"<thinking>.*?</thinking>", "", dialogue_raw, flags=re.DOTALL).strip()
 
-            if not planner_task_clean and "COMPLETED" in planner_task_raw:
-                planner_task_clean = "COMPLETED"
+            if not dialogue_clean and "COMPLETED" in dialogue_raw.upper():
+                dialogue_clean = "COMPLETED"
 
-            # 如果 Planner 还在要求做既往史比较，但代码层判断已经不需要了，
-            # 也不要直接结束，而是先进入“新增症状确认”
-            if self._contains_history_compare_instruction(planner_task_clean):
+            if self._contains_history_compare_instruction(dialogue_clean):
                 history_targets = self._get_history_related_targets(active_entities, long_term_memory_str)
                 if (not history_targets) or self._all_history_targets_completed(active_entities, long_term_memory_str):
                     return "除了这些，您还有其他不舒服的地方吗？"
 
-            # ==============================
-            # 核心修复：COMPLETED 不等于立刻结束
-            # 必须满足：
-            # 1) 上一轮 AI 明确问过“还有没有其他不舒服”
-            # 2) 患者这轮明确否认有新增症状
-            # 才允许真正结束
-            # ==============================
-            if "COMPLETED" in planner_task_clean:
+            if "COMPLETED" in dialogue_clean.upper():
                 if (
-                        self._is_asking_about_additional_symptoms(last_ai_message)
-                        and self._patient_explicitly_declines_more_symptoms(patient_input)
+                    self._is_asking_about_additional_symptoms(last_ai_message)
+                    and self._patient_explicitly_declines_more_symptoms(patient_input)
                 ):
                     return "好的，您的病情信息已收集完毕，系统正在为您生成病历草稿。"
                 else:
                     return "除了这些，您还有其他不舒服的地方吗？"
 
-            reply = self.reply_chain.invoke({
-                "patient_input": patient_input,
-                "planner_task": planner_task_clean
-            })
-            return reply
+            if not dialogue_clean:
+                return "您再具体说一下这次最明显的不舒服，好吗？"
+
+            return dialogue_clean
 
         except Exception as e:
             print(f"生成回复出错: {e}")
