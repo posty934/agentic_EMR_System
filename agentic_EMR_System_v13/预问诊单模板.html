@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>预问诊单模板（修复版）</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #e9e9e9;
+      font-family: "SimSun", "Songti SC", "Noto Serif CJK SC", serif;
+    }
+    .page {
+      width: 210mm;
+      height: 297mm;
+      margin: 0 auto;
+      background: white;
+      box-shadow: 0 0 8px rgba(0,0,0,.12);
+    }
+    svg {
+      width: 210mm;
+      height: 297mm;
+      display: block;
+    }
+    .small-title { font-size: 34px; }
+    .main-title { font-size: 56px; font-weight: 600; }
+    .label { font-size: 30px; font-weight: 600; }
+    .value { font-size: 26px; }
+    .section { font-size: 44px; letter-spacing: 28px; }
+    .mark { font-size: 22px; font-weight: 700; }
+    .thin-line { stroke: #444; stroke-width: 1.2; }
+    .box { fill: none; stroke: #333; stroke-width: 1.1; }
+
+    /* 统一正文块样式，避免首行与要点不对齐 */
+    .content-block {
+      margin: 0;
+      padding: 0;
+      font-size: 26px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      font-family: "SimSun", "Songti SC", "Noto Serif CJK SC", serif;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <svg viewBox="0 0 1447 2048" xmlns="http://www.w3.org/2000/svg">
+      <!-- 标题 -->
+      <text x="723.5" y="82" text-anchor="middle" class="small-title">ABC市人民医院</text>
+      <text x="723.5" y="168" text-anchor="middle" class="main-title">预问诊单</text>
+
+      <!-- 第一行：把值整体向右挪，避免与标签重叠 -->
+      <text x="210" y="315" class="label">姓名:</text>
+      <text id="name" x="330" y="315" class="value"></text>
+
+      <text x="540" y="315" class="label">年龄:</text>
+      <text id="age" x="660" y="315" class="value"></text>
+
+      <text x="870" y="315" class="label">性别:</text>
+      <text x="980" y="315" class="value">男</text>
+      <rect x="1015" y="293" width="18" height="18" class="box" />
+      <text id="sex_male" x="1019" y="309" class="mark"></text>
+
+      <text x="1055" y="315" class="value">女</text>
+      <rect x="1090" y="293" width="18" height="18" class="box" />
+      <text id="sex_female" x="1094" y="309" class="mark"></text>
+
+      <!-- 第二行：把时间值整体右移，避免覆盖 -->
+      <text x="210" y="445" class="label">问诊时间:</text>
+      <text id="visit_time" x="380" y="445" class="value"></text>
+
+      <text x="760" y="445" class="label">记录时间:</text>
+      <text id="record_time" x="930" y="445" class="value"></text>
+
+      <!-- 分隔线 -->
+      <line x1="165" y1="520" x2="1205" y2="520" class="thin-line" />
+
+      <!-- 病史 -->
+      <text x="723.5" y="605" text-anchor="middle" class="section">病 史</text>
+
+      <!-- 主诉：首行与标签基线更齐 -->
+      <text x="190" y="720" class="label">主诉:</text>
+      <foreignObject x="300" y="690" width="940" height="120">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="content-block" id="chief_complaint"></div>
+      </foreignObject>
+
+      <!-- 现病史：首行下移并右移一点，避免看起来顶得过高 -->
+      <text x="190" y="980" class="label">现病史:</text>
+      <foreignObject x="330" y="950" width="910" height="360">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="content-block" id="present_history"></div>
+      </foreignObject>
+
+      <!-- 既往史：同样做基线对齐 -->
+      <text x="190" y="1380" class="label">既往史:</text>
+      <foreignObject x="330" y="1350" width="910" height="170">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="content-block" id="past_history"></div>
+      </foreignObject>
+
+      <!-- 诊断建议 -->
+      <text x="190" y="1725" class="label">诊断建议:</text>
+      <foreignObject x="350" y="1695" width="890" height="240">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="content-block" id="diagnostic_suggestion"></div>
+      </foreignObject>
+    </svg>
+  </div>
+
+  <script>
+    const data = {
+      name: "张三",
+      age: "29岁",
+      sex: "男",
+      visit_time: "2026-04-16 09:30",
+      record_time: "2026-04-16 09:45",
+      chief_complaint: "反复上腹部不适伴恶心3天。",
+      present_history: "患者3天前无明显诱因出现上腹部隐痛不适，伴轻度恶心，无呕吐，无发热，无腹泻。近1天症状较前加重，进食后腹胀明显，休息后可稍缓解。为进一步评估病情，今日来院预问诊。",
+      past_history: "既往体健。否认高血压、糖尿病、冠心病病史；否认肝炎、结核等传染病史；否认手术及重大外伤史；否认食物及药物过敏史。",
+      diagnostic_suggestion: "建议结合体格检查及辅助检查进一步明确病因。可完善血常规、肝功能、淀粉酶、腹部超声等检查，并根据结果决定后续消化内科就诊或进一步处理。"
+    };
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value || "";
+    }
+
+    function setMark(id, active) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = active ? "√" : "";
+    }
+
+    setText("name", data.name);
+    setText("age", data.age);
+    setText("visit_time", data.visit_time);
+    setText("record_time", data.record_time);
+    setText("chief_complaint", data.chief_complaint);
+    setText("present_history", data.present_history);
+    setText("past_history", data.past_history);
+    setText("diagnostic_suggestion", data.diagnostic_suggestion);
+
+    setMark("sex_male", data.sex === "男");
+    setMark("sex_female", data.sex === "女");
+  </script>
+</body>
+</html>
