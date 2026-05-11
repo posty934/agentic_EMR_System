@@ -129,6 +129,31 @@ class Agent1Extractor:
         ])
         self.reply_chain = self.reply_prompt | self.llm | StrOutputParser()
 
+    @staticmethod
+    def _build_targeted_followup(error_report: dict) -> str:
+        """根据 Reviewer 结构化错误，生成定向追问话术。"""
+        slot_question_map = {
+            "symptom_name": "为了确认病情，能再明确一下您最主要的不适症状是什么吗？",
+            "onset_time": "请再确认一下，这个症状是从什么时候开始出现的？",
+            "characteristics": "这个不适具体是什么感觉（比如胀痛、绞痛、隐痛）？",
+            "inducement": "在发作前有没有明显诱因，比如饮食、受凉或劳累？",
+            "frequency": "这个症状出现的频率大概是怎样的？",
+            "alleviating_factors": "有没有什么方式能让症状缓解一些？",
+            "dynamic_details.与过往病史关联": "结合您既往类似情况，这次和上次相比有加重吗？有没有新出现的伴随症状？"
+        }
+
+        suggested_slots = error_report.get("suggested_target_slots") or []
+        for slot in suggested_slots:
+            if slot in slot_question_map:
+                return slot_question_map[slot]
+
+        conflict_fields = error_report.get("conflict_fields") or []
+        for field in conflict_fields:
+            if field in slot_question_map:
+                return slot_question_map[field]
+
+        return "我想再核实一个关键细节：这次最困扰您的症状是什么？大概从什么时候开始？"
+
     def extract(self, patient_input: str, current_entities: List[dict] = None, last_ai_message: str = "",
                 chat_history_str: str = "", long_term_memory_str: str = "") -> List[dict]:
         try:
@@ -154,9 +179,13 @@ class Agent1Extractor:
             return []
 
     def generate_reply(self, patient_input: str, current_entities: List[dict], last_ai_message: str = "",
-                       chat_history_str: str = "", long_term_memory_str: str = "") -> str:
+                       chat_history_str: str = "", long_term_memory_str: str = "",
+                       error_report: dict = None) -> str:
         try:
             active_entities = [ent for ent in current_entities if ent.get("status", "active") != "revoked"]
+
+            if error_report and error_report.get("conflict_type") not in (None, "", "none"):
+                return self._build_targeted_followup(error_report)
 
             if not active_entities:
                 return "您好，系统似乎没有捕捉到您的不适症状，能请您再具体描述一下哪里不舒服吗？"

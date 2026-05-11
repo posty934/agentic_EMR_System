@@ -50,6 +50,7 @@ class EMRWorkflow:
     def node_extractor(self, state: EMRState):
         messages = state.get("messages", [])
         entities = state.get("entities", [])
+        error_report = state.get("error_report", {})
 
         # 提取患者向量记忆
         long_term_memory_str = state.get("long_term_memory", "无既往病史记录。")
@@ -101,19 +102,22 @@ class EMRWorkflow:
 
         # 🚨 注意：给 generate_reply 传入 long_term_memory_str
         reply = self.agent1.generate_reply(last_human_msg, updated_entities, last_ai_msg, chat_history_str,
-                                           long_term_memory_str)
+                                           long_term_memory_str, error_report)
         is_finished = "病情信息已收集完毕" in reply
 
         return {
             "messages": [AIMessage(content=reply)],
             "entities": updated_entities,
             "missing_slots": [],
-            "is_finished": is_finished
+            "is_finished": is_finished,
+            "error_report": {}  # Agent1 已消费本轮结构化错误，避免重复追问
         }
 
     def node_reviewer(self, state: EMRState):
         draft = state.get("draft_record", {})
         entities = state.get("entities", [])
+        revision_round = state.get("revision_round", 0)
+        messages = state.get("messages", [])
 
         validation = self.agent3.validate(draft, entities)
 
@@ -130,11 +134,20 @@ class EMRWorkflow:
             new_messages.append(AIMessage(content=validation["rollback_question"]))
 
             is_finished_state = False
+            revision_round += 1
 
         return {
             "is_valid": validation["is_valid"],
             "feedback": validation["feedback"],
             "rollback_question": validation["rollback_question"],
+            "error_report": {
+                "conflict_type": validation.get("conflict_type", "none"),
+                "conflict_fields": validation.get("conflict_fields", []),
+                "suggested_target_slots": validation.get("suggested_target_slots", [])
+            } if not validation["is_valid"] else {},
+            "revision_round": revision_round,
+            "last_valid_snapshot_id": state.get("last_valid_snapshot_id", f"msg_{len(messages)}")
+            if not validation["is_valid"] else f"msg_{len(messages)}",
             "messages": new_messages,
             "is_finished": is_finished_state
         }
